@@ -126,21 +126,25 @@ class FuncExplorer:
     
     def get_function_info(self, input_address):
         """主查询函数，返回分类后的函数信息列表"""
-        input_address = self.clean_input(input_address)
-        input_address = self.parse_offsets(input_address)
-        if not input_address:
-            return None, None, "输入的偏移量无效。"
-        important_functions = self.read_file(self.info4_file)
-        if important_functions is None:
-            return None, None, "读取重点函数文件时出错。"
-        lines = self.read_file(self.info_file)
-        if lines is None:
-            return None, None, "读取函数文件时出错。"
-        matched_lines = self.filter_lines(input_address, lines)
-        if not matched_lines:
-            return None, None, "未找到匹配的函数信息。"
-        message_im, message_vi, message = self.categorize_functions(matched_lines, important_functions)
-        return (message_im, message_vi, message), None, None
+        try:
+            input_address = self.clean_input(input_address)
+            input_address = self.parse_offsets(input_address)
+            if not input_address:
+                return None, None, "输入的偏移量无效。"
+            important_functions = self.read_file(self.info4_file)
+            if important_functions is None:
+                return None, None, "读取重点函数文件时出错。"
+            lines = self.read_file(self.info_file)
+            if lines is None:
+                return None, None, "读取函数文件时出错。"
+            matched_lines = self.filter_lines(input_address, lines)
+            if not matched_lines:
+                return None, None, "未找到匹配的函数信息。"
+            message_im, message_vi, message = self.categorize_functions(matched_lines, important_functions)
+            return (message_im, message_vi, message), None, None
+        except Exception as e:
+            logger.error("An unexpected error occurred in get_function_info:", exc_info=e)
+            return None, None, "发生了一个意外错误。"
 
 class FuncExplorerGUI(QWidget):
     def __init__(self):
@@ -241,8 +245,20 @@ class FuncExplorerGUI(QWidget):
         if not user_input:
             QMessageBox.warning(self, "输入错误", "请输入要查询的函数名或函数头。")
             return
-        # 获取函数信息
-        (message_im, message_vi, message), error, error_msg = self.func_explorer.get_function_info(user_input)
+        try:
+            result = self.func_explorer.get_function_info(user_input)
+            if result is None:
+                QMessageBox.critical(self, "错误", "未能获取函数信息。")
+                return
+            (message_im, message_vi, message), error, error_msg = result
+        except TypeError:
+            QMessageBox.critical(self, "错误", "未能获取函数信息。")
+            return
+        except Exception as e:
+            logger.error("An unexpected error occurred during search:", exc_info=e)
+            QMessageBox.critical(self, "错误", "搜索过程中发生了一个错误。")
+            return
+
         if error:
             # 显示错误信息
             error_label = QLabel(error_msg)
@@ -252,6 +268,7 @@ class FuncExplorerGUI(QWidget):
             error_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
             self.scroll_layout.addWidget(error_label)
             return
+
         if message_im:
             # 显示重点函数
             category_label = QLabel("以下是重点函数：")
