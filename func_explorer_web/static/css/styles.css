@@ -1,0 +1,28 @@
+body {
+    background-color: #f9f9f9;
+}
+
+h1 {
+    color: #333333;
+}
+
+h3.text-danger {
+    color: #d9534f;
+}
+
+h3.text-info {
+    color: #5bc0de;
+}
+
+h3.text-success {
+    color: #5cb85c;
+}
+
+.accordion-button:focus {
+    box-shadow: none;
+}
+
+.selectable {
+    user-select: text;
+    cursor: text;
+}
