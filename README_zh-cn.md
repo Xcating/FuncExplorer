@@ -85,4 +85,4 @@ FuncExplorer 是一个基于 Python 和 PyQt5 构建的图形用户界面（GUI�
 
 ### **许可证**
 
-本项目不采用许可证。
+本项目采用 GPLv3 许可证。详情请参阅 [LICENSE](LICENSE) 文件。

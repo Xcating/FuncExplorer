@@ -85,4 +85,4 @@ Contributions are welcome! Please fork the repository and submit a pull request 
 
 ### **License**
 
-This project is not licensed
+This project adopts GPLv3 license. Please refer to the [LICENSE](LICENSE) document for details.
