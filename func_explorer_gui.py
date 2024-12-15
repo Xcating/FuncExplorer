@@ -1,35 +1,36 @@
 import re
-import os
+import sys
 import logging
 from pathlib import Path
-import sys
+
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QMessageBox, QScrollArea, QGroupBox, QGridLayout, QFrame,
-    QPlainTextEdit
+    QPushButton, QMessageBox, QScrollArea, QGroupBox, QPlainTextEdit
 )
 from PyQt5.QtGui import QFont, QIcon
 from PyQt5.QtCore import Qt
 
-# Configure logging
-logging.basicConfig(level=logging.ERROR)
+# 配置日志
+logging.basicConfig(
+    level=logging.ERROR,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
+
 
 class FuncExplorer:
     def __init__(self):
-        self.info_file = Path(__file__).parent / 'functions.txt'
-        self.info4_file = Path(__file__).parent / 'important_functions.txt'
+        base_path = Path(__file__).parent.resolve()
+        self.info_file = base_path / 'functions.txt'
+        self.important_functions_file = base_path / 'important_functions.txt'
 
-    def clean_input(self, input_address):
+    @staticmethod
+    def clean_input(input_address):
         """清理输入地址，移除前缀和多余字符"""
-        patterns = [
-            r'^#', r'^/', r'^查', r'^找', r'^看', r'^函数',
-            r'^Function', r'^function', r'^Func', r'^func',
-            r'^call', r'^Call', r'^ ', r'^/'
-        ]
-        for pattern in patterns:
-            input_address = re.sub(pattern, '', input_address).strip()
-        return input_address
+        # 合并重复的模式
+        patterns = r'^(#|/|查|找|看|函数|Function|function|Func|func|call|Call| )+'
+        cleaned = re.sub(patterns, '', input_address).strip()
+        return cleaned
 
     def parse_offsets(self, input_address):
         """解析输入中的偏移量"""
@@ -51,132 +52,158 @@ class FuncExplorer:
         """读取文件内容并返回行列表"""
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
-                return [line.strip() for line in f]
+                return [line.strip() for line in f if line.strip()]
         except Exception as err:
-            logger.error(f"Error reading {file_path}:", exc_info=err)
+            logger.error(f"Error reading {file_path}: {err}", exc_info=True)
             return None
 
     def filter_lines(self, input_address, lines):
         """根据输入地址过滤匹配的行"""
-        matched_lines = []
         if re.fullmatch(r'^[0-9A-Fa-f]+$', input_address):
-            # 处理十六进制地址匹配
             try:
                 input_number = int(input_address, 16)
             except ValueError:
-                return None
-            for line in lines:
-                parts = line.split('\t')
-                if len(parts) < 2:
-                    continue
-                try:
-                    current_number = int(parts[0], 16)
-                    if input_number - 0xFFFF <= current_number <= input_number:
-                        matched_lines.append(line)
-                except ValueError:
-                    continue
+                logger.error(f"Invalid hexadecimal input: {input_address}")
+                return []
+            matched_lines = [
+                line for line in lines
+                if len(line.split('\t')) >= 2 and
+                self._is_within_range(line.split('\t')[0], input_number)
+            ]
             return [matched_lines[-1]] if matched_lines else []
         else:
-            # 处理模糊匹配
-            keywords = [kw.strip() for kw in re.split(r'[\s,;，。]+', input_address) if kw.strip()]
+            keywords = [kw for kw in re.split(r'[\s,;，。]+', input_address) if kw]
             if keywords:
-                regex = re.compile(''.join([f'(?=.*{re.escape(kw)})' for kw in keywords]), re.IGNORECASE)
-                matched_lines = [line for line in lines if regex.search(line)][:1000]
-                return matched_lines
-        return matched_lines
+                # 使用非捕获组和所有关键字的前瞻断言
+                regex = re.compile('(?=.*' + ')(?=.*'.join(map(re.escape, keywords)) + ')', re.IGNORECASE)
+                return [line for line in lines if regex.search(line)][:1000]
+        return []
+
+    @staticmethod
+    def _is_within_range(line_address, input_number):
+        """检查地址是否在指定范围内"""
+        try:
+            current_number = int(line_address, 16)
+            return input_number - 0xFFFF <= current_number <= input_number
+        except ValueError:
+            return False
 
     def categorize_functions(self, matched_lines, important_functions):
         """分类函数信息为重点函数、普通函数和虚函数"""
+        important_set = set()
+        for func in important_functions:
+            try:
+                important_set.add(int(func, 16))
+            except ValueError:
+                logger.warning(f"Invalid important function address: {func}")
+
         message_im = []
         message_vi = []
         message = []
+
         for line in matched_lines:
-            messages = ""
             parts = line.split('\t')
             if len(parts) < 5:
                 continue
-            # 判断是否为重点函数
-            is_important_function = False
-            for te_line in important_functions:
-                try:
-                    a = int(te_line, 16)
-                    b = int(parts[0], 16)
-                    if a == b:
-                        #messages += "[此函数是重点函数*]\n"
-                        is_important_function = True
-                        break
-                except ValueError:
-                    continue
-            # 拼接函数信息
-            messages += f"函数头：{parts[0]}\n函数定义：{parts[1]}\n返回与临时寄存器组：{parts[2]}\n"
-            parts[3] = parts[3].replace('0x', '').strip()
-            if parts[3]:
-                messages += f"函数清栈：add esp,{parts[3]} (十六进制)\n"
-            messages += f"函数简介：{parts[4]}\n"
-            if len(parts) > 6 and parts[6]:
-                messages += f"{parts[6]}\n"
-            messages = messages.replace(" ;", "\n ")
-            # 分类存储
-            if is_important_function:
+
+            try:
+                func_address = int(parts[0], 16)
+            except ValueError:
+                logger.warning(f"Invalid function address: {parts[0]}")
+                continue
+
+            is_important = func_address in important_set
+            messages = self._construct_function_message(parts)
+
+            if is_important:
                 message_im.append(messages)
             else:
                 if len(parts) > 6 and parts[6]:
                     message_vi.append(messages)
                 else:
                     message.append(messages)
+
         return message_im, message_vi, message
+
+    @staticmethod
+    def _construct_function_message(parts):
+        """构建函数信息字符串"""
+        messages = (
+            f"函数头：{parts[0]}\n"
+            f"函数定义：{parts[1]}\n"
+            f"返回与临时寄存器组：{parts[2]}\n"
+        )
+        stack_clean = parts[3].replace('0x', '').strip()
+        if stack_clean:
+            messages += f"函数清栈：add esp,{stack_clean} (十六进制)\n"
+        messages += f"函数简介：{parts[4]}\n"
+        if len(parts) > 6 and parts[6]:
+            messages += f"{parts[6]}\n"
+        return messages.replace(" ;", "\n ")
 
     def get_function_info(self, input_address):
         """主查询函数，返回分类后的函数信息列表"""
         try:
-            input_address = self.clean_input(input_address)
-            input_address = self.parse_offsets(input_address)
-            if not input_address:
+            cleaned_input = self.clean_input(input_address)
+            parsed_input = self.parse_offsets(cleaned_input)
+            if not parsed_input:
                 return None, None, "输入的偏移量无效。"
-            important_functions = self.read_file(self.info4_file)
+
+            important_functions = self.read_file(self.important_functions_file)
             if important_functions is None:
                 return None, None, "读取重点函数文件时出错。"
+
             lines = self.read_file(self.info_file)
             if lines is None:
                 return None, None, "读取函数文件时出错。"
-            matched_lines = self.filter_lines(input_address, lines)
+
+            matched_lines = self.filter_lines(parsed_input, lines)
             if not matched_lines:
                 return None, None, "未找到匹配的函数信息。"
+
             message_im, message_vi, message = self.categorize_functions(matched_lines, important_functions)
             return (message_im, message_vi, message), None, None
+
         except Exception as e:
-            logger.error("An unexpected error occurred in get_function_info:", exc_info=e)
+            logger.error("An unexpected error occurred in get_function_info:", exc_info=True)
             return None, None, "发生了一个意外错误。"
+
 
 class FuncExplorerGUI(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("FuncExplorer GUI")
-        self.setGeometry(100, 100, 900, 800) # 增加窗口高度
+        self.setGeometry(100, 100, 900, 800)  # 增加窗口高度
         self.func_explorer = FuncExplorer()
-        # Define registers here for GUI
-        self.registers = {'eax', 'ebx', 'ecx', 'edx', 'esi', 'edi', 'esp', 'ebp',
-                          'r8', 'r9', 'r10', 'r11', 'r12', 'r13', 'r14', 'r15',
-                          'rax', 'rbx', 'rcx', 'rdx', 'rsi', 'rdi', 'rsp', 'rbp',
-                          'rip', 'rflags'}
+
+        # 定义寄存器集
+        self.registers = {
+            'eax', 'ebx', 'ecx', 'edx', 'esi', 'edi', 'esp', 'ebp',
+            'r8', 'r9', 'r10', 'r11', 'r12', 'r13', 'r14', 'r15',
+            'rax', 'rbx', 'rcx', 'rdx', 'rsi', 'rdi', 'rsp', 'rbp',
+            'rip', 'rflags'
+        }
+
         self.init_ui()
 
     def init_ui(self):
-        # Set main layout
+        """初始化用户界面"""
         main_layout = QVBoxLayout()
-        # Title Label
+
+        # 标题标签
         title_label = QLabel("FuncExplorer")
-        title_font = QFont("Arial", 24, QFont.Bold)
-        title_label.setFont(title_font)
+        title_label.setFont(QFont("Arial", 24, QFont.Bold))
         title_label.setAlignment(Qt.AlignCenter)
         main_layout.addWidget(title_label)
-        # 在标题下方添加说明项目使用 PyQt 的标签
+
+        # 说明标签
         pyqt_label = QLabel("本软件项目使用了 PyQt5 构建图形界面")
         pyqt_label.setFont(QFont("Arial", 10))
         pyqt_label.setAlignment(Qt.AlignCenter)
         pyqt_label.setStyleSheet("color: #555555;")
         main_layout.addWidget(pyqt_label)
-        # Input layout
+
+        # 输入布局
         input_layout = QHBoxLayout()
         input_label = QLabel("输入函数名或函数头：")
         input_label.setFont(QFont("Arial", 12))
@@ -186,13 +213,15 @@ class FuncExplorerGUI(QWidget):
         input_layout.addWidget(input_label)
         input_layout.addWidget(self.input_field)
         main_layout.addLayout(input_layout)
-        # Search button
+
+        # 搜索按钮
         self.search_button = QPushButton("搜索")
         self.search_button.setFont(QFont("Arial", 12))
         self.search_button.setIcon(QIcon.fromTheme("system-search"))
         self.search_button.clicked.connect(self.perform_search)
         main_layout.addWidget(self.search_button)
-        # Scroll Area for results
+
+        # 结果滚动区域
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_content = QWidget()
@@ -200,156 +229,139 @@ class FuncExplorerGUI(QWidget):
         self.scroll_layout.setAlignment(Qt.AlignTop)
         self.scroll_area.setWidget(self.scroll_content)
         main_layout.addWidget(self.scroll_area)
-        # Set layout
+
         self.setLayout(main_layout)
-        # Apply styles
         self.apply_styles()
 
     def apply_styles(self):
+        """应用样式表"""
         self.setStyleSheet("""
-        QWidget {
-            background-color: #f9f9f9;
-        }
-        QLabel {
-            color: #333333;
-        }
-        QPushButton {
-            background-color: #4CAF50;
-            color: white;
-            padding: 10px 20px;
-            border: none;
-            border-radius: 5px;
-        }
-        QPushButton:hover {
-            background-color: #45a049;
-        }
-        QLineEdit {
-            padding: 5px;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-        }
-        QGroupBox {
-            border: 1px solid #ccc;
-            border-radius: 5px;
-            margin-top: 10px;
-        }
-        QGroupBox::title {
-            subcontrol-origin: margin;
-            left: 10px;
-            padding: 0 5px 0 5px;
-        }
-        QPlainTextEdit {
-            background-color: #272822;
-            color: #f8f8f2;
-            font-family: Consolas, "Courier New", monospace;
-            font-size: 12px;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-            padding: 10px;
-        }
+            QWidget {
+                background-color: #f9f9f9;
+            }
+            QLabel {
+                color: #333333;
+            }
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                padding: 10px 20px;
+                border: none;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QLineEdit {
+                padding: 5px;
+                border: 1px solid #ccc;
+                border-radius: 4px;
+            }
+            QGroupBox {
+                border: 1px solid #ccc;
+                border-radius: 5px;
+                margin-top: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+            }
+            QPlainTextEdit {
+                background-color: #272822;
+                color: #f8f8f2;
+                font-family: Consolas, "Courier New", monospace;
+                font-size: 12px;
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                padding: 10px;
+            }
         """)
 
     def perform_search(self):
-        # 清除之前的结果
+        """执行搜索操作"""
         self.clear_results()
         user_input = self.input_field.text().strip()
         if not user_input:
             QMessageBox.warning(self, "输入错误", "请输入要查询的函数名或函数头。")
             return
-        try:
-            result = self.func_explorer.get_function_info(user_input)
-            if result is None:
-                QMessageBox.critical(self, "错误", "未能获取函数信息。")
-                return
-            (message_im, message_vi, message), error, error_msg = result
-        except TypeError:
-            QMessageBox.critical(self, "错误", "未能获取函数信息。")
-            return
-        except Exception as e:
-            logger.error("An unexpected error occurred during search:", exc_info=e)
-            QMessageBox.critical(self, "错误", "搜索过程中发生了一个错误。")
-            return
+
+        result, error, error_msg = self.func_explorer.get_function_info(user_input)
         if error:
-            # 显示错误信息
-            error_label = QLabel(error_msg)
-            error_label.setFont(QFont("Arial", 12))
-            error_label.setStyleSheet("color: red;")
-            # 允许文本选择
-            error_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            self.scroll_layout.addWidget(error_label)
+            self._display_error(error_msg)
             return
-        if message_im:
-            # 显示重点函数
-            category_label = QLabel("以下是重点函数：")
-            category_label.setFont(QFont("Arial", 14, QFont.Bold))
-            category_label.setStyleSheet("color: #d9534f;") # 红色
-            self.scroll_layout.addWidget(category_label)
-            for func_info in message_im:
-                group_box, asm_text = self.create_function_groupbox(func_info, is_important=True)
-                self.scroll_layout.addWidget(group_box)
-                if asm_text:
-                    self.scroll_layout.addWidget(asm_text) # 添加汇编代码框
-        if message_vi:
-            # 显示虚函数
-            category_label = QLabel("以下是虚函数：")
-            category_label.setFont(QFont("Arial", 14, QFont.Bold))
-            category_label.setStyleSheet("color: #5bc0de;") # 蓝色
-            self.scroll_layout.addWidget(category_label)
-            for func_info in message_vi:
-                group_box, asm_text = self.create_function_groupbox(func_info, is_virtual=True)
-                self.scroll_layout.addWidget(group_box)
-                if asm_text:
-                    self.scroll_layout.addWidget(asm_text) # 添加汇编代码框
-        if message:
-            # 显示普通函数
-            category_label = QLabel("以下是普通函数：")
-            category_label.setFont(QFont("Arial", 14, QFont.Bold))
-            category_label.setStyleSheet("color: #5cb85c;") # 绿色
-            self.scroll_layout.addWidget(category_label)
-            for func_info in message:
-                group_box, asm_text = self.create_function_groupbox(func_info)
-                self.scroll_layout.addWidget(group_box)
-                if asm_text:
-                    self.scroll_layout.addWidget(asm_text) # 添加汇编代码框
-        if not (message_im or message_vi or message):
-            # 如果没有找到函数
-            no_result_label = QLabel("未找到匹配的函数信息。")
-            no_result_label.setFont(QFont("Arial", 12))
-            no_result_label.setStyleSheet("color: red;")
-            no_result_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            self.scroll_layout.addWidget(no_result_label)
+
+        if result:
+            message_im, message_vi, message = result
+            if message_im:
+                self._display_category("以下是重点函数：", message_im, category_color="#d9534f")
+            if message_vi:
+                self._display_category("以下是虚函数：", message_vi, category_color="#5bc0de")
+            if message:
+                self._display_category("以下是普通函数：", message, category_color="#5cb85c")
+
+        if not any([result[0], result[1], result[2]]):
+            self._display_no_results()
 
     def clear_results(self):
-        # 移除所有子控件
+        """清除之前的搜索结果"""
         while self.scroll_layout.count():
             child = self.scroll_layout.takeAt(0)
             if child.widget():
                 child.widget().deleteLater()
+
+    def _display_error(self, message):
+        """显示错误信息"""
+        error_label = QLabel(message)
+        error_label.setFont(QFont("Arial", 12))
+        error_label.setStyleSheet("color: red;")
+        error_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.scroll_layout.addWidget(error_label)
+
+    def _display_no_results(self):
+        """显示无结果信息"""
+        no_result_label = QLabel("未找到匹配的函数信息。")
+        no_result_label.setFont(QFont("Arial", 12))
+        no_result_label.setStyleSheet("color: red;")
+        no_result_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.scroll_layout.addWidget(no_result_label)
+
+    def _display_category(self, title, messages, category_color):
+        """显示特定类别的函数信息"""
+        category_label = QLabel(title)
+        category_label.setFont(QFont("Arial", 14, QFont.Bold))
+        category_label.setStyleSheet(f"color: {category_color};")
+        self.scroll_layout.addWidget(category_label)
+        for func_info in messages:
+            group_box, asm_text = self.create_function_groupbox(func_info, 
+                                                                 is_important=(category_color == "#d9534f"),
+                                                                 is_virtual=(category_color == "#5bc0de"))
+            self.scroll_layout.addWidget(group_box)
+            if asm_text:
+                self.scroll_layout.addWidget(asm_text)
 
     def create_function_groupbox(self, function_info, is_important=False, is_virtual=False):
         """创建一个显示函数信息的QGroupBox，并对函数定义进行高亮显示"""
         group_box = QGroupBox()
         group_box.setCheckable(True)
         group_box.setChecked(False)
-        group_box.setStyleSheet("""
-        QGroupBox {
-            font: 14px Arial;
-        }
-        """)
+        group_box.setStyleSheet("QGroupBox { font: 14px Arial; }")
         layout = QVBoxLayout()
-        # 如果是重点函数，添加标签
+
+        # 添加重点函数或虚函数标签
         if is_important:
-            important_label = QLabel("[此函数是重点函数*]")
-            important_label.setFont(QFont("Arial", 12, QFont.Bold))
-            important_label.setStyleSheet("color: #d9534f;") # 红色
-            important_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            layout.addWidget(important_label)
+            label = QLabel("[此函数是重点函数*]")
+            label.setFont(QFont("Arial", 12, QFont.Bold))
+            label.setStyleSheet("color: #d9534f;")
+            label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            layout.addWidget(label)
         if is_virtual:
-            virtual_label = QLabel("[此函数是虚函数]")
-            virtual_label.setFont(QFont("Arial", 12, QFont.Bold))
-            virtual_label.setStyleSheet("color: #5bc0de;") # 蓝色
-            virtual_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            layout.addWidget(virtual_label)
+            label = QLabel("[此函数是虚函数]")
+            label.setFont(QFont("Arial", 12, QFont.Bold))
+            label.setStyleSheet("color: #5bc0de;")
+            label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            layout.addWidget(label)
+
         # 分析函数信息
         func_lines = function_info.split('\n')
         func_def = ""
@@ -357,66 +369,67 @@ class FuncExplorerGUI(QWidget):
         for func_line in func_lines:
             if func_line.startswith("函数头："):
                 func_address = func_line.split("：", 1)[1].strip()
-                # 添加函数头标签
-                func_header_label = QLabel(f"函数头：{func_address}")
-                func_header_label.setFont(QFont("Arial", 12))
-                func_header_label.setStyleSheet("color: #333333;")
-                func_header_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-                layout.addWidget(func_header_label)
+                label = QLabel(f"函数头：{func_address}")
+                label.setFont(QFont("Arial", 12))
+                label.setStyleSheet("color: #333333;")
+                label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                layout.addWidget(label)
             elif func_line.startswith("函数定义："):
                 func_def = func_line.split("：", 1)[1].strip()
                 highlighted_def = self.highlight_function_definition(func_def)
-                func_label = QLabel(highlighted_def)
-                func_label.setFont(QFont("Consolas", 12)) # 使用等宽字体更美观
-                func_label.setStyleSheet("color: #333333;")
-                func_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-                func_label.setTextFormat(Qt.RichText)
-                layout.addWidget(func_label)
+                label = QLabel(highlighted_def)
+                label.setFont(QFont("Consolas", 12))
+                label.setStyleSheet("color: #333333;")
+                label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                label.setTextFormat(Qt.RichText)
+                layout.addWidget(label)
             elif func_line.startswith("返回与临时寄存器组："):
                 return_registers = func_line.split("：", 1)[1].strip()
-                return_label = QLabel(f"返回与临时寄存器组：{return_registers}")
-                return_label.setFont(QFont("Arial", 12))
-                return_label.setStyleSheet("color: #333333;")
-                return_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-                layout.addWidget(return_label)
+                label = QLabel(f"返回与临时寄存器组：{return_registers}")
+                label.setFont(QFont("Arial", 12))
+                label.setStyleSheet("color: #333333;")
+                label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                layout.addWidget(label)
             elif func_line.startswith("函数清栈："):
                 stack_clean = func_line.split("：", 1)[1].strip()
-                stack_label = QLabel(f"函数清栈：{stack_clean}")
-                stack_label.setFont(QFont("Arial", 12))
-                stack_label.setStyleSheet("color: #333333;")
-                stack_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-                layout.addWidget(stack_label)
+                label = QLabel(f"函数清栈：{stack_clean}")
+                label.setFont(QFont("Arial", 12))
+                label.setStyleSheet("color: #333333;")
+                label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                layout.addWidget(label)
             elif func_line.startswith("函数简介："):
                 func_intro = func_line.split("：", 1)[1].strip()
-                intro_label = QLabel(f"函数简介：{func_intro}")
-                intro_label.setFont(QFont("Arial", 12))
-                intro_label.setStyleSheet("color: #333333;")
-                intro_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-                layout.addWidget(intro_label)
+                label = QLabel(f"函数简介：{func_intro}")
+                label.setFont(QFont("Arial", 12))
+                label.setStyleSheet("color: #333333;")
+                label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                layout.addWidget(label)
             else:
                 extra_info = func_line.strip()
                 if extra_info:
-                    extra_label = QLabel(extra_info)
-                    extra_label.setFont(QFont("Arial", 12))
-                    extra_label.setStyleSheet("color: #333333;")
-                    extra_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-                    layout.addWidget(extra_label)
+                    label = QLabel(extra_info)
+                    label.setFont(QFont("Arial", 12))
+                    label.setStyleSheet("color: #333333;")
+                    label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                    layout.addWidget(label)
+
         group_box.setLayout(layout)
+
         # 生成汇编代码
         asm_example = self.generate_asm_example(func_def, func_address)
         asm_text = None
         if asm_example:
-            # 创建汇编代码标签
-            asm_label = QLabel("函数用例（伪C++ __asm）：")
+            asm_label = QLabel("函数用例（伪C __asm）：")
             asm_label.setFont(QFont("Arial", 12, QFont.Bold))
             asm_label.setStyleSheet("color: #555555;")
             layout.addWidget(asm_label)
-            # 创建汇编代码文本框
+
             asm_text = QPlainTextEdit()
             asm_text.setPlainText(asm_example)
             asm_text.setReadOnly(True)
-            asm_text.setMinimumHeight(150) # 增加代码框的最小高度
+            asm_text.setMinimumHeight(150)
             layout.addWidget(asm_text)
+
         return group_box, asm_text
 
     def generate_asm_example(self, func_def, func_address):
@@ -425,145 +438,130 @@ class FuncExplorerGUI(QWidget):
         """
         if not func_def or not func_address:
             return None
-        # Extract the address (assuming func_address is hexadecimal)
-        try:
-            # 确保地址以0x开头
-            if not func_address.lower().startswith("0x"):
-                call_addr = f"0x{func_address}"
-            else:
-                call_addr = func_address
-        except:
-            call_addr = "0xUNKNOWN"
-        # Parse function definition
+
+        # 确保地址以0x开头
+        call_addr = func_address if func_address.lower().startswith("0x") else f"0x{func_address}"
+
+        # 解析函数定义
         pattern = re.compile(
             r'(?P<class>[\w:]+)::(?P<function>\w+)\s*\((?P<params>[^)]*)\)'
         )
         match = pattern.match(func_def)
         if not match:
             return None
-        class_full = match.group('class')  # e.g., Sexy::MemoryImage
-        function_name = match.group('function')  # e.g., BltTrianglesTexHelper
-        params = match.group('params')  # e.g., bool blend, float tx, ...
-        # Split parameters
-        param_list = [p.strip() for p in params.split(',')]
-        # Initialize lists for push and mov
+
+        class_full = match.group('class')
+        function_name = match.group('function')
+        params = match.group('params')
+
+        # 分割参数
+        param_list = [p.strip() for p in params.split(',') if p.strip()]
         push_params = []
         mov_registers = []
+
         for param in param_list:
-            # Check for register assignments (e.g., ecx = Zombie* this)
-            reg_assign_pattern = re.compile(r'^(?P<reg>\w+)\s*=\s*(?P<value>.+)$')
-            reg_match = reg_assign_pattern.match(param)
-            if reg_match:
-                reg = reg_match.group('reg')
-                value = reg_match.group('value')
+            # 检查寄存器赋值
+            reg_assign_match = re.match(r'^(?P<reg>\w+)\s*=\s*(?P<value>.+)$', param)
+            if reg_assign_match:
+                reg = reg_assign_match.group('reg')
+                value = reg_assign_match.group('value')
                 # 处理数组参数
-                array_match = re.compile(r'^(?P<type>[\w\*]+)\s+(?P<name>\w+(\s*\[\s*\]\s*\[\s*\])?\w*)$')
-                array_match = array_match.match(value)
+                array_match = re.match(r'^[\w\*]+\s+(?P<name>\w+)(\s*\[\s*\])+$', value)
                 if array_match:
-                    var_type = array_match.group('type')
-                    var_name = array_match.group('name').split('[')[0].strip()
+                    var_name = array_match.group('name')
                     if reg.lower() in self.registers:
-                        # 将数组名作为指针压入寄存器
                         mov_registers.append((reg, var_name))
                 else:
-                    # 仅提取变量名称，忽略类型
-                    value_parts = value.strip().split()
-                    variable_name = value_parts[-1] if value_parts else value
+                    # 提取变量名称
+                    var_parts = value.strip().split()
+                    variable_name = var_parts[-1] if var_parts else value
                     if reg.lower() in self.registers:
                         mov_registers.append((reg, variable_name))
             else:
-                # Regular parameter to be pushed
-                # 处理数组参数
-                array_match = re.compile(r'^(?P<type>[\w\*]+)\s+(?P<name>\w+\s*\[\s*\]\s*\[\s*\]\w*)$')
-                array_match = array_match.match(param)
+                # 普通参数压栈
+                array_match = re.match(r'^[\w\*]+\s+(?P<name>\w+)(\s*\[\s*\])+$', param)
                 if array_match:
-                    var_type = array_match.group('type')
-                    var_name = array_match.group('name').split('[')[0].strip()
-                    push_params.append(var_name)  # 压入数组名作为指针
+                    var_name = array_match.group('name')
+                    push_params.append(var_name)
                 else:
-                    # 提取参数名称（假设格式为：type name）
+                    # 提取参数名称
                     parts = param.split()
                     if len(parts) >= 2:
                         param_name = parts[-1]
                         push_params.append(param_name)
                     else:
                         push_params.append(param)
-        # 生成 asm 行
-        asm_lines = []
-        asm_lines.append(f"void* CallAddr = (void*){call_addr};")
-        asm_lines.append("__asm")
-        asm_lines.append("{")
-        # 从最后一个参数到第一个参数推送
+
+        # 生成 asm 代码
+        asm_lines = [
+            f"void* CallAddr = (void*){call_addr};",
+            "__asm",
+            "{"
+        ]
+
+        # 逆序压栈
         for param in reversed(push_params):
             asm_lines.append(f"    push {param}")
-        # 移动寄存器赋值
+
+        # 移动寄存器
         for reg, value in mov_registers:
             asm_lines.append(f"    mov {reg}, {value}")
+
         asm_lines.append(f"    call CallAddr")
         asm_lines.append("}")
-        # Combine asm lines
-        asm_code = "\n".join(asm_lines)
-        return asm_code
+
+        return "\n".join(asm_lines)
 
     def highlight_function_definition(self, func_def):
         """
         解析函数定义字符串，并返回带有HTML高亮的字符串。
-        例如:
-        Sexy::ButtonListener::ButtonPress(int theClickCount, int theId, ecx = ButtonListener* this)
         """
-        # Define colors
         colors = {
-            'class': '#28a745', # 绿色
-            'operator': '#000000', # 黑色
-            'function': '#ffc107', # 黄色
-            'datatype': '#007bff', # 蓝色
-            'varname': '#000000', # 黑色
-            'register': '#ff4500', # 橙红色
+            'class': '#28a745',       # 绿色
+            'operator': '#000000',    # 黑色
+            'function': '#ffc107',    # 黄色
+            'datatype': '#007bff',    # 蓝色
+            'varname': '#000000',     # 黑色
+            'register': '#ff4500',    # 橙红色
         }
-        # Regular expression to parse the function definition
+
         pattern = re.compile(
             r'(?P<class>[\w:]+)::(?P<function>\w+)\s*\((?P<params>[^)]*)\)'
         )
         match = pattern.match(func_def)
         if not match:
-            # If not matched, return the original string
             return func_def
-        class_full = match.group('class') # e.g., Sexy::ButtonListener
-        function_name = match.group('function') # e.g., ButtonPress
-        params = match.group('params') # e.g., int theClickCount, ...
-        # Process class name and '::' operator
+
+        class_full = match.group('class')
+        function_name = match.group('function')
+        params = match.group('params')
+
+        # 高亮类名和作用域运算符
         class_parts = class_full.split('::')
-        highlighted_class = ""
-        for i, part in enumerate(class_parts):
-            highlighted_class += f'<span style="color:{colors["class"]};">{part}</span>'
-            if i < len(class_parts) - 1:
-                highlighted_class += f'<span style="color:{colors["operator"]};">::</span>'
-        # Process function name
+        highlighted_class = ''.join(
+            [f'<span style="color:{colors["class"]};">{part}</span>' +
+             (f'<span style="color:{colors["operator"]};">::</span>' if i < len(class_parts)-1 else '')
+             for i, part in enumerate(class_parts)]
+        )
+
+        # 高亮函数名
         highlighted_function = f'<span style="color:{colors["function"]};">{function_name}</span>'
-        # Process parameters
+
+        # 高亮参数
         highlighted_params = self.highlight_parameters(params, colors)
-        # Combine the highlighted parts
-        highlighted_def = f'{highlighted_class}::{highlighted_function}({highlighted_params})'
-        return highlighted_def
+
+        return f'{highlighted_class}::{highlighted_function}({highlighted_params})'
 
     def highlight_single_parameter(self, param, colors):
         """
         高亮显示单个参数。
-        例如:
-        int theClickCount
-        ecx = Zombie* this
         """
-        # Check for register assignment (e.g., ecx = Zombie* this)
-        register_pattern = re.compile(r'^(?P<reg>\w+)\s*=\s*(?P<value>.+)$')
-        reg_match = register_pattern.match(param)
-        if reg_match:
-            reg = reg_match.group('reg')
-            value = reg_match.group('value')
-            # Only highlight if register is in the defined set
-            if reg.lower() in self.registers:
-                highlighted_reg = f'<span style="color:{colors["register"]};">{reg}</span>'
-            else:
-                highlighted_reg = f'<span style="color:{colors["varname"]};">{reg}</span>'
+        register_match = re.match(r'^(?P<reg>\w+)\s*=\s*(?P<value>.+)$', param)
+        if register_match:
+            reg = register_match.group('reg')
+            value = register_match.group('value')
+            reg_color = colors["register"] if reg.lower() in self.registers else colors["varname"]
+            highlighted_reg = f'<span style="color:{reg_color};">{reg}</span>'
             highlighted_value = self.highlight_expression(value, colors)
             return f'{highlighted_reg} = {highlighted_value}'
         else:
@@ -572,37 +570,21 @@ class FuncExplorerGUI(QWidget):
     def highlight_parameters(self, params, colors):
         """
         解析参数字符串，并返回带有HTML高亮的字符串。
-        例如:
-        int theClickCount, int theId, ecx = Zombie* this
         """
-        # Split parameters
-        param_list = [p.strip() for p in params.split(',')]
-        highlighted_params = []
-        for param in param_list:
-            # Check for default value assignment
-            if '=' in param:
-                highlighted_param = self.highlight_single_parameter(param, colors)
-            else:
-                highlighted_param = self.highlight_single_parameter(param, colors)
-            highlighted_params.append(highlighted_param)
+        param_list = [p.strip() for p in params.split(',') if p.strip()]
+        highlighted_params = [self.highlight_single_parameter(p, colors) for p in param_list]
         return ', '.join(highlighted_params)
 
     def highlight_expression(self, expr, colors):
         """
         高亮显示表达式中的数据类型和变量名。
-        例如:
-        int theClickCount
-        Zombie* this
         """
-        # Define common data types, can be extended as needed
         data_types = [
             'void', 'int', 'float', 'double', 'char', 'bool', 'long', 'short',
             'unsigned', 'signed', 'const', 'static', 'Zombie', 'Plant',
             'ButtonListener', 'SeedType', 'Board', 'ZombieType',
             'Challenge', 'CutScene'
         ]
-        # Regular expression to split data type and variable name
-        # Handle pointers, references, and arrays
         pattern = re.compile(
             r'(?P<type>\b(?:' + '|'.join(map(re.escape, data_types)) + r')\b[\w\s\*&]*)\s+(?P<name>[\w\[\]]+)'
         )
@@ -610,20 +592,18 @@ class FuncExplorerGUI(QWidget):
         if match:
             type_part = match.group('type')
             name_part = match.group('name')
-            # Highlight data type
             highlighted_type = f'<span style="color:{colors["datatype"]};">{type_part}</span>'
-            # Highlight variable name
             highlighted_name = f'<span style="color:{colors["varname"]};">{name_part}</span>'
             return f'{highlighted_type} {highlighted_name}'
-        else:
-            # If not matched, return the original string
-            return expr
+        return expr
 
+    @staticmethod
     def main():
         app = QApplication(sys.argv)
         gui = FuncExplorerGUI()
         gui.show()
         sys.exit(app.exec_())
+
 
 if __name__ == "__main__":
     FuncExplorerGUI.main()
