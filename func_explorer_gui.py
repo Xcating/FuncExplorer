@@ -378,7 +378,7 @@ class FuncExplorerGUI(QWidget):
         # 定义颜色
         colors = {
             'class': '#28a745',      # 绿色
-            'operator': '#ffffff',   # 白色
+            'operator': '#000000',   # 黑色
             'function': '#ffc107',   # 黄色
             'datatype': '#007bff',   # 蓝色
             'varname': '#000000',    # 黑色
