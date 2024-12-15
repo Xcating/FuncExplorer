@@ -162,14 +162,21 @@ class FuncExplorerGUI(QWidget):
     def init_ui(self):
         # Set main layout
         main_layout = QVBoxLayout()
-        
+
         # Title Label
         title_label = QLabel("FuncExplorer")
         title_font = QFont("Arial", 24, QFont.Bold)
         title_label.setFont(title_font)
         title_label.setAlignment(Qt.AlignCenter)
         main_layout.addWidget(title_label)
-        
+
+        # 在标题下方添加说明项目使用 PyQt 的标签
+        pyqt_label = QLabel("本软件项目使用了 PyQt5 构建图形界面")
+        pyqt_label.setFont(QFont("Arial", 10))
+        pyqt_label.setAlignment(Qt.AlignCenter)
+        pyqt_label.setStyleSheet("color: #555555;")
+        main_layout.addWidget(pyqt_label)
+
         # Input layout
         input_layout = QHBoxLayout()
         input_label = QLabel("输入函数名或函数头：")
@@ -180,14 +187,14 @@ class FuncExplorerGUI(QWidget):
         input_layout.addWidget(input_label)
         input_layout.addWidget(self.input_field)
         main_layout.addLayout(input_layout)
-        
+
         # Search button
         self.search_button = QPushButton("搜索")
         self.search_button.setFont(QFont("Arial", 12))
         self.search_button.setIcon(QIcon.fromTheme("system-search"))
         self.search_button.clicked.connect(self.perform_search)
         main_layout.addWidget(self.search_button)
-        
+
         # Scroll Area for results
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
@@ -196,10 +203,10 @@ class FuncExplorerGUI(QWidget):
         self.scroll_layout.setAlignment(Qt.AlignTop)
         self.scroll_area.setWidget(self.scroll_content)
         main_layout.addWidget(self.scroll_area)
-        
+
         # Set layout
         self.setLayout(main_layout)
-        
+
         # Apply styles
         self.apply_styles()
     
