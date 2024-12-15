@@ -83,7 +83,7 @@ class FuncExplorer:
                 regex = re.compile(''.join([f'(?=.*{re.escape(kw)})' for kw in keywords]), re.IGNORECASE)
                 matched_lines = [line for line in lines if regex.search(line)][:1000]
                 return matched_lines
-            return matched_lines
+        return matched_lines
 
     def categorize_functions(self, matched_lines, important_functions):
         """分类函数信息为重点函数、普通函数和虚函数"""
@@ -152,7 +152,7 @@ class FuncExplorerGUI(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("FuncExplorer GUI")
-        self.setGeometry(100, 100, 900, 800)  # 增加窗口高度
+        self.setGeometry(100, 100, 900, 800) # 增加窗口高度
         self.func_explorer = FuncExplorer()
         # Define registers here for GUI
         self.registers = {'eax', 'ebx', 'ecx', 'edx', 'esi', 'edi', 'esp', 'ebp',
@@ -287,7 +287,8 @@ class FuncExplorerGUI(QWidget):
             for func_info in message_im:
                 group_box, asm_text = self.create_function_groupbox(func_info, is_important=True)
                 self.scroll_layout.addWidget(group_box)
-                self.scroll_layout.addWidget(asm_text)  # 添加汇编代码框
+                if asm_text:
+                    self.scroll_layout.addWidget(asm_text) # 添加汇编代码框
         if message_vi:
             # 显示虚函数
             category_label = QLabel("以下是虚函数：")
@@ -297,7 +298,8 @@ class FuncExplorerGUI(QWidget):
             for func_info in message_vi:
                 group_box, asm_text = self.create_function_groupbox(func_info, is_virtual=True)
                 self.scroll_layout.addWidget(group_box)
-                self.scroll_layout.addWidget(asm_text)  # 添加汇编代码框
+                if asm_text:
+                    self.scroll_layout.addWidget(asm_text) # 添加汇编代码框
         if message:
             # 显示普通函数
             category_label = QLabel("以下是普通函数：")
@@ -307,7 +309,8 @@ class FuncExplorerGUI(QWidget):
             for func_info in message:
                 group_box, asm_text = self.create_function_groupbox(func_info)
                 self.scroll_layout.addWidget(group_box)
-                self.scroll_layout.addWidget(asm_text)  # 添加汇编代码框
+                if asm_text:
+                    self.scroll_layout.addWidget(asm_text) # 添加汇编代码框
         if not (message_im or message_vi or message):
             # 如果没有找到函数
             no_result_label = QLabel("未找到匹配的函数信息。")
@@ -399,7 +402,6 @@ class FuncExplorerGUI(QWidget):
                     extra_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
                     layout.addWidget(extra_label)
         group_box.setLayout(layout)
-
         # 生成汇编代码
         asm_example = self.generate_asm_example(func_def, func_address)
         asm_text = None
@@ -413,7 +415,7 @@ class FuncExplorerGUI(QWidget):
             asm_text = QPlainTextEdit()
             asm_text.setPlainText(asm_example)
             asm_text.setReadOnly(True)
-            asm_text.setMinimumHeight(150)  # 增加代码框的最小高度
+            asm_text.setMinimumHeight(150) # 增加代码框的最小高度
             layout.addWidget(asm_text)
         return group_box, asm_text
 
@@ -432,7 +434,6 @@ class FuncExplorerGUI(QWidget):
                 call_addr = func_address
         except:
             call_addr = "0xUNKNOWN"
-
         # Parse function definition
         pattern = re.compile(
             r'(?P<class>[\w:]+)::(?P<function>\w+)\s*\((?P<params>[^)]*)\)'
@@ -440,17 +441,14 @@ class FuncExplorerGUI(QWidget):
         match = pattern.match(func_def)
         if not match:
             return None
-        class_full = match.group('class') # e.g., Sexy::MemoryImage
-        function_name = match.group('function') # e.g., BltTrianglesTexHelper
-        params = match.group('params') # e.g., bool blend, float tx, ...
-
+        class_full = match.group('class')  # e.g., Sexy::MemoryImage
+        function_name = match.group('function')  # e.g., BltTrianglesTexHelper
+        params = match.group('params')  # e.g., bool blend, float tx, ...
         # Split parameters
         param_list = [p.strip() for p in params.split(',')]
-
         # Initialize lists for push and mov
         push_params = []
         mov_registers = []
-
         for param in param_list:
             # Check for register assignments (e.g., ecx = Zombie* this)
             reg_assign_pattern = re.compile(r'^(?P<reg>\w+)\s*=\s*(?P<value>.+)$')
@@ -458,38 +456,51 @@ class FuncExplorerGUI(QWidget):
             if reg_match:
                 reg = reg_match.group('reg')
                 value = reg_match.group('value')
-                # 仅提取变量名称，忽略类型
-                # 假设变量名是最后一个单词
-                value_parts = value.strip().split()
-                variable_name = value_parts[-1] if value_parts else value
-                if reg.lower() in self.registers:
-                    mov_registers.append((reg, variable_name))
+                # 处理数组参数
+                array_match = re.compile(r'^(?P<type>[\w\*]+)\s+(?P<name>\w+(\s*\[\s*\]\s*\[\s*\])?\w*)$')
+                array_match = array_match.match(value)
+                if array_match:
+                    var_type = array_match.group('type')
+                    var_name = array_match.group('name').split('[')[0].strip()
+                    if reg.lower() in self.registers:
+                        # 将数组名作为指针压入寄存器
+                        mov_registers.append((reg, var_name))
                 else:
-                    push_params.append(variable_name)
+                    # 仅提取变量名称，忽略类型
+                    value_parts = value.strip().split()
+                    variable_name = value_parts[-1] if value_parts else value
+                    if reg.lower() in self.registers:
+                        mov_registers.append((reg, variable_name))
             else:
                 # Regular parameter to be pushed
-                # Extract parameter name (assuming format: type name)
-                parts = param.split()
-                if len(parts) >= 2:
-                    param_name = parts[-1]
-                    push_params.append(param_name)
+                # 处理数组参数
+                array_match = re.compile(r'^(?P<type>[\w\*]+)\s+(?P<name>\w+\s*\[\s*\]\s*\[\s*\]\w*)$')
+                array_match = array_match.match(param)
+                if array_match:
+                    var_type = array_match.group('type')
+                    var_name = array_match.group('name').split('[')[0].strip()
+                    push_params.append(var_name)  # 压入数组名作为指针
                 else:
-                    push_params.append(param)
-
+                    # 提取参数名称（假设格式为：type name）
+                    parts = param.split()
+                    if len(parts) >= 2:
+                        param_name = parts[-1]
+                        push_params.append(param_name)
+                    else:
+                        push_params.append(param)
         # 生成 asm 行
         asm_lines = []
         asm_lines.append(f"void* CallAddr = (void*){call_addr};")
         asm_lines.append("__asm")
         asm_lines.append("{")
         # 从最后一个参数到第一个参数推送
-        for param in push_params:
+        for param in reversed(push_params):
             asm_lines.append(f"    push {param}")
         # 移动寄存器赋值
         for reg, value in mov_registers:
             asm_lines.append(f"    mov {reg}, {value}")
         asm_lines.append(f"    call CallAddr")
         asm_lines.append("}")
-
         # Combine asm lines
         asm_code = "\n".join(asm_lines)
         return asm_code
@@ -520,7 +531,6 @@ class FuncExplorerGUI(QWidget):
         class_full = match.group('class') # e.g., Sexy::ButtonListener
         function_name = match.group('function') # e.g., ButtonPress
         params = match.group('params') # e.g., int theClickCount, ...
-
         # Process class name and '::' operator
         class_parts = class_full.split('::')
         highlighted_class = ""
@@ -588,11 +598,14 @@ class FuncExplorerGUI(QWidget):
         data_types = [
             'void', 'int', 'float', 'double', 'char', 'bool', 'long', 'short',
             'unsigned', 'signed', 'const', 'static', 'Zombie', 'Plant',
-            'ButtonListener', 'SeedType', "Board*", "ZombieType", "Zombie*&", "Challenge*", "CutScene*"
+            'ButtonListener', 'SeedType', 'Board', 'ZombieType',
+            'Challenge', 'CutScene'
         ]
         # Regular expression to split data type and variable name
-        # Handle pointers and references
-        pattern = re.compile(r'(?P<type>\b(?:' + '|'.join(map(re.escape, data_types)) + r')\b[\w\s\*]*)\s+(?P<name>\w+)')
+        # Handle pointers, references, and arrays
+        pattern = re.compile(
+            r'(?P<type>\b(?:' + '|'.join(map(re.escape, data_types)) + r')\b[\w\s\*&]*)\s+(?P<name>[\w\[\]]+)'
+        )
         match = pattern.match(expr)
         if match:
             type_part = match.group('type')
@@ -606,11 +619,11 @@ class FuncExplorerGUI(QWidget):
             # If not matched, return the original string
             return expr
 
-def main():
-    app = QApplication(sys.argv)
-    gui = FuncExplorerGUI()
-    gui.show()
-    sys.exit(app.exec_())
+    def main():
+        app = QApplication(sys.argv)
+        gui = FuncExplorerGUI()
+        gui.show()
+        sys.exit(app.exec_())
 
 if __name__ == "__main__":
-    main()
+    FuncExplorerGUI.main()
